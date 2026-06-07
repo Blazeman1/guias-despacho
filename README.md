@@ -1,7 +1,7 @@
 # Sistema de Gestión de Guías de Despacho
 ### CDY2204 – Desarrollo Cloud Native | Semana 3 | Exp. 1
 
-API REST con Spring Boot 3.2 que gestiona guías de despacho, integrando **AWS EFS** para almacenamiento temporal y **AWS S3** para almacenamiento persistente, desplegada automáticamente en **EC2** mediante un pipeline CI/CD con **GitHub Actions**.
+API REST con Spring Boot 3.2 que gestiona guías de despacho, integrando **AWS EFS** para almacenamiento temporal y **AWS S3** para almacenamiento persistente, desplegada automáticamente en **EC2** mediante un pipeline CI/CD con **GitHub Actions**. 
 
 ---
 
