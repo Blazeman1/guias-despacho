@@ -1,0 +1,168 @@
+package com.duocuc.guias.service;
+
+import com.duocuc.guias.dto.GuiaDTO;
+import com.duocuc.guias.model.GuiaDespacho;
+import com.duocuc.guias.repository.GuiaDespachoRepository;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+
+import java.io.IOException;
+import java.time.LocalDate;
+import java.time.format.DateTimeFormatter;
+import java.util.List;
+import java.util.UUID;
+import java.util.stream.Collectors;
+
+@Slf4j
+@Service
+@RequiredArgsConstructor
+public class GuiaDespachoService {
+
+    private final GuiaDespachoRepository repository;
+    private final PdfService pdfService;
+    private final EfsService efsService;
+    private final S3Service s3Service;
+
+    /**
+     * Criterio 1 + 2: Crea la guía, genera el PDF, lo guarda en EFS y lo sube a S3.
+     */
+    @Transactional
+    public GuiaDTO.GuiaResponse crearYSubirGuia(GuiaDTO.CrearGuiaRequest request) throws IOException {
+        // Generar número único
+        String numeroGuia = "GUIA-" + LocalDate.now().format(DateTimeFormatter.ofPattern("yyyyMMdd"))
+                + "-" + UUID.randomUUID().toString().substring(0, 6).toUpperCase();
+
+        // Crear entidad
+        GuiaDespacho guia = new GuiaDespacho();
+        guia.setNumeroGuia(numeroGuia);
+        guia.setTransportista(request.getTransportista());
+        guia.setDestinatario(request.getDestinatario());
+        guia.setDireccionDestino(request.getDireccionDestino());
+        guia.setDescripcionCarga(request.getDescripcionCarga());
+        guia.setPesoKg(request.getPesoKg());
+        guia.setFechaDespacho(request.getFechaDespacho());
+        guia.setEstado(GuiaDespacho.EstadoGuia.PENDIENTE);
+        guia = repository.save(guia);
+
+        // Generar PDF
+        byte[] pdfBytes = pdfService.generarPdf(guia);
+
+        // Guardar en EFS (almacenamiento temporal)
+        efsService.efsDisponible(); // Verifica/crea directorio base
+        String rutaEfs = efsService.guardarEnEfs(pdfBytes, request.getTransportista(), numeroGuia);
+        guia.setRutaEfs(rutaEfs);
+        guia.setEstado(GuiaDespacho.EstadoGuia.GENERADA);
+
+        // Subir a S3 con carpetas por fecha/transportista
+        String claveS3 = s3Service.construirClaveS3(
+                request.getFechaDespacho(), request.getTransportista(), numeroGuia);
+        s3Service.subirArchivo(pdfBytes, claveS3);
+        guia.setClaveS3(claveS3);
+        guia.setEstado(GuiaDespacho.EstadoGuia.SUBIDA_S3);
+
+        guia = repository.save(guia);
+        log.info("Guía creada y subida a S3: {} -> {}", numeroGuia, claveS3);
+        return GuiaDTO.GuiaResponse.from(guia);
+    }
+
+    /**
+     * Criterio 4: Descarga la guía desde S3.
+     */
+    public byte[] descargarGuia(String numeroGuia) {
+        GuiaDespacho guia = obtenerPorNumero(numeroGuia);
+        if (guia.getClaveS3() == null) {
+            throw new IllegalStateException("La guía " + numeroGuia + " no ha sido subida a S3 aún.");
+        }
+        return s3Service.descargarArchivo(guia.getClaveS3());
+    }
+
+    /**
+     * Criterio 3: Modifica los datos de la guía y actualiza el archivo en S3.
+     */
+    @Transactional
+    public GuiaDTO.GuiaResponse actualizarGuia(String numeroGuia, GuiaDTO.ActualizarGuiaRequest request) throws IOException {
+        GuiaDespacho guia = obtenerPorNumero(numeroGuia);
+
+        // Actualizar campos si vienen en el request
+        if (request.getDestinatario() != null)    guia.setDestinatario(request.getDestinatario());
+        if (request.getDireccionDestino() != null) guia.setDireccionDestino(request.getDireccionDestino());
+        if (request.getDescripcionCarga() != null) guia.setDescripcionCarga(request.getDescripcionCarga());
+        if (request.getPesoKg() != null)           guia.setPesoKg(request.getPesoKg());
+        if (request.getFechaDespacho() != null)    guia.setFechaDespacho(request.getFechaDespacho());
+        if (request.getEstado() != null)           guia.setEstado(request.getEstado());
+
+        guia = repository.save(guia);
+
+        // Regenerar PDF con datos actualizados
+        byte[] pdfActualizado = pdfService.generarPdf(guia);
+
+        // Actualizar en EFS si existe
+        if (guia.getRutaEfs() != null) {
+            efsService.guardarEnEfs(pdfActualizado, guia.getTransportista(), guia.getNumeroGuia());
+        }
+
+        // Actualizar en S3 (sobreescribe el objeto existente)
+        if (guia.getClaveS3() != null) {
+            s3Service.actualizarArchivo(pdfActualizado, guia.getClaveS3());
+        }
+
+        log.info("Guía actualizada: {}", numeroGuia);
+        return GuiaDTO.GuiaResponse.from(guia);
+    }
+
+    /**
+     * Elimina la guía de S3, EFS y base de datos.
+     */
+    @Transactional
+    public void eliminarGuia(String numeroGuia) {
+        GuiaDespacho guia = obtenerPorNumero(numeroGuia);
+
+        // Eliminar de S3
+        if (guia.getClaveS3() != null) {
+            s3Service.eliminarArchivo(guia.getClaveS3());
+        }
+
+        // Eliminar del EFS
+        if (guia.getRutaEfs() != null) {
+            efsService.eliminarDeEfs(guia.getRutaEfs());
+        }
+
+        repository.delete(guia);
+        log.info("Guía eliminada: {}", numeroGuia);
+    }
+
+    /**
+     * Criterio 5: Consulta historial por transportista y/o fecha.
+     */
+    public List<GuiaDTO.GuiaResponse> consultarHistorial(String transportista, LocalDate fecha) {
+        List<GuiaDespacho> guias;
+
+        if (transportista != null && fecha != null) {
+            guias = repository.findByTransportistaAndFechaDespacho(transportista, fecha);
+        } else if (transportista != null) {
+            guias = repository.findByTransportista(transportista);
+        } else if (fecha != null) {
+            guias = repository.findByFechaDespacho(fecha);
+        } else {
+            guias = repository.findAll();
+        }
+
+        return guias.stream()
+                .map(GuiaDTO.GuiaResponse::from)
+                .collect(Collectors.toList());
+    }
+
+    /**
+     * Obtiene una guía por su número.
+     */
+    public GuiaDTO.GuiaResponse obtenerGuia(String numeroGuia) {
+        return GuiaDTO.GuiaResponse.from(obtenerPorNumero(numeroGuia));
+    }
+
+    private GuiaDespacho obtenerPorNumero(String numeroGuia) {
+        return repository.findByNumeroGuia(numeroGuia)
+                .orElseThrow(() -> new RuntimeException("Guía no encontrada: " + numeroGuia));
+    }
+}
