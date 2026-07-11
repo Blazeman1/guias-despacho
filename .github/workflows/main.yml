@@ -123,6 +123,6 @@ jobs:
           username: ${{ secrets.EC2_GUIAS_USER }}
           key: ${{ secrets.EC2_GUIAS_SSH_KEY }}
           script: |
-            sleep 25
+            sleep 40
             curl -f http://localhost:8080/actuator/health || exit 1
             echo "Aplicacion respondiendo correctamente"
