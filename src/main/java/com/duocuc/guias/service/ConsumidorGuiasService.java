@@ -45,9 +45,17 @@ public class ConsumidorGuiasService {
         log.info("Mensaje recibido desde {}: numeroGuia={}",
                 RabbitMQConfig.COLA_PRINCIPAL, mensaje.get("numeroGuia"));
 
+        // Si numeroGuia es null (mensaje malformado), lanza excepción
+        // → RabbitMQ detecta el fallo y redirige a guias-cola-errores (DLQ)
         String numeroGuia = (String) mensaje.get("numeroGuia");
-        String transportista = (String) mensaje.get("transportista");
-        String destinatario = (String) mensaje.get("destinatario");
+        if (numeroGuia == null) {
+            throw new IllegalArgumentException(
+                "Mensaje malformado: falta el campo 'numeroGuia'. "
+                + "Redirigiendo a DLQ guias-cola-errores.");
+        }
+
+        String transportista    = (String) mensaje.get("transportista");
+        String destinatario     = (String) mensaje.get("destinatario");
         String direccionDestino = (String) mensaje.get("direccionDestino");
         String descripcionCarga = (String) mensaje.get("descripcionCarga");
         Double pesoKg = mensaje.get("pesoKg") != null
