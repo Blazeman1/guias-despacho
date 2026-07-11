@@ -3,6 +3,7 @@ package com.duocuc.guias.service;
 import com.duocuc.guias.dto.GuiaDTO;
 import com.duocuc.guias.model.GuiaDespacho;
 import com.duocuc.guias.repository.GuiaDespachoRepository;
+import com.duocuc.guias.service.ProductorGuiasService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -24,6 +25,7 @@ public class GuiaDespachoService {
     private final PdfService pdfService;
     private final EfsService efsService;
     private final S3Service s3Service;
+    private final ProductorGuiasService productorGuiasService;
 
     /**
      * Criterio 1 + 2: Crea la guía, genera el PDF, lo guarda en EFS y lo sube a S3.
@@ -63,6 +65,8 @@ public class GuiaDespachoService {
         guia.setEstado(GuiaDespacho.EstadoGuia.SUBIDA_S3);
 
         guia = repository.save(guia);
+        // Semana 8: enviar guía a la Cola 1 (guias-cola-principal) para procesamiento asíncrono
+        productorGuiasService.enviarGuia(guia);
         log.info("Guía creada y subida a S3: {} -> {}", numeroGuia, claveS3);
         return GuiaDTO.GuiaResponse.from(guia);
     }
