@@ -69,33 +69,35 @@ jobs:
             echo "${{ secrets.DOCKERHUB_TOKEN }}" | sudo docker login \
               -u "${{ secrets.DOCKERHUB_USERNAME }}" --password-stdin
 
+            echo "=== Creando red Docker si no existe ==="
+            sudo docker network create guias-network 2>/dev/null || echo "Red ya existe"
+
             echo "=== Levantando RabbitMQ si no esta corriendo ==="
             if ! sudo docker ps | grep -q rabbitmq-guias; then
               sudo docker run -d \
                 --name rabbitmq-guias \
                 --restart unless-stopped \
+                --network guias-network \
                 -p 5672:5672 \
                 -p 15672:15672 \
                 -e RABBITMQ_DEFAULT_USER=guest \
                 -e RABBITMQ_DEFAULT_PASS=guest \
                 rabbitmq:3-management
-              echo "RabbitMQ iniciado, esperando 15s..."
-              sleep 15
+              echo "RabbitMQ iniciado, esperando 20s..."
+              sleep 20
             else
               echo "RabbitMQ ya estaba corriendo"
+              sudo docker network connect guias-network rabbitmq-guias 2>/dev/null || true
             fi
 
-            echo "=== Deteniendo contenedor anterior ==="
             sudo docker stop guias-despacho 2>/dev/null || true
             sudo docker rm guias-despacho 2>/dev/null || true
-
-            echo "=== Descargando imagen actualizada ==="
             sudo docker pull ${{ env.DOCKER_IMAGE }}:latest
 
-            echo "=== Ejecutando contenedor Spring Boot ==="
             sudo docker run -d \
               --name guias-despacho \
               --restart unless-stopped \
+              --network guias-network \
               -p 8080:8080 \
               -v /mnt/efs:/app/efs \
               -e AWS_S3_BUCKET=${{ secrets.AWS_S3_BUCKET_GUIAS }} \
@@ -106,8 +108,10 @@ jobs:
               -e EFS_MOUNT_PATH=/app/efs \
               -e AZURE_AD_B2C_JWKS_URI=${{ secrets.AZURE_AD_B2C_JWKS_URI }} \
               -e AZURE_AD_B2C_ISSUER_URI=${{ secrets.AZURE_AD_B2C_ISSUER_URI }} \
-              -e RABBITMQ_HOST=host.docker.internal \
-              --add-host=host.docker.internal:host-gateway \
+              -e RABBITMQ_HOST=rabbitmq-guias \
+              -e RABBITMQ_PORT=5672 \
+              -e RABBITMQ_USER=guest \
+              -e RABBITMQ_PASS=guest \
               ${{ env.DOCKER_IMAGE }}:latest
 
             sudo docker image prune -f
@@ -119,6 +123,6 @@ jobs:
           username: ${{ secrets.EC2_GUIAS_USER }}
           key: ${{ secrets.EC2_GUIAS_SSH_KEY }}
           script: |
-            sleep 20
+            sleep 25
             curl -f http://localhost:8080/actuator/health || exit 1
             echo "Aplicacion respondiendo correctamente"
