@@ -8,13 +8,10 @@ import org.springframework.amqp.core.QueueBuilder;
 import org.springframework.amqp.rabbit.config.SimpleRabbitListenerContainerFactory;
 import org.springframework.amqp.rabbit.connection.ConnectionFactory;
 import org.springframework.amqp.rabbit.core.RabbitTemplate;
-import org.springframework.amqp.rabbit.retry.RejectAndDontRequeueRecoverer;
 import org.springframework.amqp.support.converter.Jackson2JsonMessageConverter;
 import org.springframework.amqp.support.converter.MessageConverter;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
-import org.springframework.retry.interceptor.RetryInterceptorBuilder;
-import org.springframework.retry.interceptor.RetryOperationsInterceptor;
 
 /**
  * Configuración de RabbitMQ — Semana 8 (Sumativa).
@@ -109,13 +106,14 @@ public class RabbitMQConfig {
     }
 
     /**
-     * Configura el contenedor de listeners con política de reintentos:
-     * - Máximo 3 intentos de procesamiento
-     * - Si los 3 fallan → RejectAndDontRequeueRecoverer rechaza el mensaje
-     * - RabbitMQ detecta el rechazo y activa el x-dead-letter-exchange
-     * - El mensaje va automáticamente a guias-cola-errores (DLQ)
+     * Configura el contenedor de listeners con defaultRequeueRejected=false.
      *
-     * Sin esta configuración, Spring AMQP reintenta indefinidamente en loop.
+     * Cuando el consumidor lanza una excepción no controlada, Spring AMQP
+     * por defecto reencola el mensaje (requeue=true), causando un loop infinito.
+     *
+     * Con defaultRequeueRejected=false, al fallar el procesamiento el mensaje
+     * es rechazado sin reencolarse, lo que activa el x-dead-letter-exchange
+     * configurado en la Cola 1 y redirige el mensaje a guias-cola-errores (DLQ).
      */
     @Bean
     public SimpleRabbitListenerContainerFactory rabbitListenerContainerFactory(
@@ -124,15 +122,8 @@ public class RabbitMQConfig {
                 new SimpleRabbitListenerContainerFactory();
         factory.setConnectionFactory(connectionFactory);
         factory.setMessageConverter(jsonMessageConverter());
-
-        RetryOperationsInterceptor retryInterceptor =
-                RetryInterceptorBuilder.stateless()
-                        .maxAttempts(3)
-                        .backOffOptions(1000, 2.0, 5000)
-                        .recoverer(new RejectAndDontRequeueRecoverer())
-                        .build();
-
-        factory.setAdviceChain(retryInterceptor);
+        // Rechazar sin reencolar al fallar → activa DLX → mensaje va a DLQ
+        factory.setDefaultRequeueRejected(false);
         return factory;
     }
 }
