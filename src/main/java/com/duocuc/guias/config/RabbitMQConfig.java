@@ -5,12 +5,16 @@ import org.springframework.amqp.core.BindingBuilder;
 import org.springframework.amqp.core.DirectExchange;
 import org.springframework.amqp.core.Queue;
 import org.springframework.amqp.core.QueueBuilder;
+import org.springframework.amqp.rabbit.config.SimpleRabbitListenerContainerFactory;
 import org.springframework.amqp.rabbit.connection.ConnectionFactory;
 import org.springframework.amqp.rabbit.core.RabbitTemplate;
+import org.springframework.amqp.rabbit.retry.RejectAndDontRequeueRecoverer;
 import org.springframework.amqp.support.converter.Jackson2JsonMessageConverter;
 import org.springframework.amqp.support.converter.MessageConverter;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.retry.interceptor.RetryInterceptorBuilder;
+import org.springframework.retry.interceptor.RetryOperationsInterceptor;
 
 /**
  * Configuración de RabbitMQ — Semana 8 (Sumativa).
@@ -102,5 +106,33 @@ public class RabbitMQConfig {
         RabbitTemplate template = new RabbitTemplate(connectionFactory);
         template.setMessageConverter(jsonMessageConverter());
         return template;
+    }
+
+    /**
+     * Configura el contenedor de listeners con política de reintentos:
+     * - Máximo 3 intentos de procesamiento
+     * - Si los 3 fallan → RejectAndDontRequeueRecoverer rechaza el mensaje
+     * - RabbitMQ detecta el rechazo y activa el x-dead-letter-exchange
+     * - El mensaje va automáticamente a guias-cola-errores (DLQ)
+     *
+     * Sin esta configuración, Spring AMQP reintenta indefinidamente en loop.
+     */
+    @Bean
+    public SimpleRabbitListenerContainerFactory rabbitListenerContainerFactory(
+            ConnectionFactory connectionFactory) {
+        SimpleRabbitListenerContainerFactory factory =
+                new SimpleRabbitListenerContainerFactory();
+        factory.setConnectionFactory(connectionFactory);
+        factory.setMessageConverter(jsonMessageConverter());
+
+        RetryOperationsInterceptor retryInterceptor =
+                RetryInterceptorBuilder.stateless()
+                        .maxAttempts(3)
+                        .backOffOptions(1000, 2.0, 5000)
+                        .recoverer(new RejectAndDontRequeueRecoverer())
+                        .build();
+
+        factory.setAdviceChain(retryInterceptor);
+        return factory;
     }
 }
